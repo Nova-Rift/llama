@@ -1,4 +1,4 @@
-# import os
+import os
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -9,13 +9,9 @@ import time
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-#         self.fc1 = ColumnParallelLinear(10, 8000)
-#         self.fc2 = ColumnParallelLinear(8000, 16000)
-#         self.fc3 = RowParallelLinear(16000, 1)
-        
         self.fc1 = ColumnParallelLinear(10, 8000)
-        self.fc2 = RowParallelLinear(8000, 16000)
-        self.fc3 = ColumnParallelLinear(16000, 1)
+        self.fc2 = ColumnParallelLinear(8000, 16000)
+        self.fc3 = RowParallelLinear(16000, 1)
 
     def forward(self, x):
         x = torch.relu(self.fc1(x))
@@ -25,12 +21,7 @@ class Net(nn.Module):
 
 def main():
     # Get the number of GPUs available
-    
-    world_size = int(os.environ.get("WORLD_SIZE", -1))
-    print('ws 1 = {}'.format(world_size))
-    
     world_size = torch.cuda.device_count()
-    print('ws 2 = {}'.format(world_size))
 
     # Initialize the distributed environment
     dist.init_process_group(backend='nccl')

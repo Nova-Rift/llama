@@ -1,17 +1,15 @@
-# import os
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 from fairscale.nn.model_parallel import ColumnParallelLinear, RowParallelLinear
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 import time
+import os
+from typing import Tuple
 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-#         self.fc1 = ColumnParallelLinear(10, 8000)
-#         self.fc2 = ColumnParallelLinear(8000, 16000)
-#         self.fc3 = RowParallelLinear(16000, 1)
         
         self.fc1 = ColumnParallelLinear(10, 8000)
         self.fc2 = RowParallelLinear(8000, 16000)
@@ -23,23 +21,20 @@ class Net(nn.Module):
         x = self.fc3(x)
         return x
 
-def main():
-    # Get the number of GPUs available
-    
+def setup_model_parallel() -> Tuple[int, int]:
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))
-    print('ws 1 = {}'.format(world_size))
-    
-    world_size = torch.cuda.device_count()
-    print('ws 2 = {}'.format(world_size))
-
-    # Initialize the distributed environment
-    dist.init_process_group(backend='nccl')
-
-    # Initialize model parallel utils
+    dist.init_process_group("nccl")
     initialize_model_parallel(world_size)
+    torch.cuda.set_device(local_rank)
+    return local_rank, world_size
+
+def main():
+    # Setup model parallel
+    local_rank, world_size = setup_model_parallel()
 
     # Create a model
-    model = Net().cuda()
+    model = Net().cuda(local_rank)
 
     # Create a MSE loss function
     criterion = nn.MSELoss()
@@ -48,8 +43,8 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # Create some fake data
-    x = torch.randn((32, 10)).cuda()  # 32 samples, 10 features
-    y = torch.randn(32, 1).cuda()     # 32 samples, 1 target variable
+    x = torch.randn((32, 10)).cuda(local_rank)  # 32 samples, 10 features
+    y = torch.randn(32, 1).cuda(local_rank)     # 32 samples, 1 target variable
 
     #start time
     start_time = time.time()
