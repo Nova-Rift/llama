@@ -9,6 +9,10 @@ from pathlib import Path
 
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 import fairscale.nn.model_parallel.initialize as fs_init
+
+from fairscale.nn.data_parallel import ShardedDataParallel as ShardedDDP
+from fairscale.optim import OSS
+
 from fairscale.nn.model_parallel.layers import (
     ParallelEmbedding,
     RowParallelLinear,
@@ -29,7 +33,7 @@ def setup_model_parallel():
     initialize_model_parallel(world_size)
     torch.cuda.set_device(local_rank)
 
-    torch.manual_seed(1)
+    torch.manual_seed(1337)
 
     return local_rank, world_size
 
@@ -43,7 +47,7 @@ eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 512
+n_embd = 1152
 n_head = 16
 n_layer = 16
 dropout = 0.1
@@ -126,7 +130,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = RowParallelLinear(n_embd, n_embd)
+        self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -176,7 +180,7 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = ParallelEmbedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = RowParallelLinear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -228,15 +232,20 @@ def main():
 
     model = BigramLanguageModel()
     model = model.to(device)
-    # model = DistributedDataParallel(model)
-    # model = nn.DataParallel(model)
     
-    m = model.to(device)
-    # print the number of parameters in the model
-    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
-
     # create a PyTorch optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+#     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = OSS(model.parameters(), optim=torch.optim.AdamW, lr=learning_rate)    
+    
+    
+    model = ShardedDDP(model, optimizer)
+
+    
+#     m = model.to(device)
+    # print the number of parameters in the model
+    print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+
+
 
     max_iters = 1000
     for iter in tqdm.trange(max_iters):
@@ -250,7 +259,7 @@ def main():
 
         logits, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        loss.sum().backward()
         optimizer.step()
 
     losses = estimate_loss(model)

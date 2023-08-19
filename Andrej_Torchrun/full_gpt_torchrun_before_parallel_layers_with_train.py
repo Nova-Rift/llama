@@ -3,8 +3,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-import sys
-
 from pathlib import Path
 
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
@@ -21,6 +19,8 @@ import os
 
 import tqdm
 
+import sys
+
 def setup_model_parallel():
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))
@@ -29,7 +29,7 @@ def setup_model_parallel():
     initialize_model_parallel(world_size)
     torch.cuda.set_device(local_rank)
 
-    torch.manual_seed(1)
+    torch.manual_seed(1337)
 
     return local_rank, world_size
 
@@ -43,12 +43,11 @@ eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 512
+n_embd = 1152
 n_head = 16
 n_layer = 16
 dropout = 0.1
 # ------------
-
 
 
 
@@ -81,7 +80,7 @@ def get_batch(split):
     return x, y
 
 @torch.no_grad()
-def estimate_loss(model):
+def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
@@ -99,9 +98,9 @@ class Head(nn.Module):
 
     def __init__(self, head_size):
         super().__init__()
-        self.key = RowParallelLinear(n_embd, head_size, bias=False)
-        self.query = RowParallelLinear(n_embd, head_size, bias=False)
-        self.value = RowParallelLinear(n_embd, head_size, bias=False)
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
         self.dropout = nn.Dropout(dropout)
@@ -126,7 +125,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = RowParallelLinear(n_embd, n_embd)
+        self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -140,9 +139,9 @@ class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            RowParallelLinear(n_embd, 4 * n_embd),
+            nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
-            ColumnParallelLinear(4 * n_embd, n_embd),
+            nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(dropout),
         )
 
@@ -172,11 +171,11 @@ class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = ParallelEmbedding(vocab_size, n_embd)
-        self.position_embedding_table = ParallelEmbedding(block_size, n_embd)
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = RowParallelLinear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -227,13 +226,13 @@ def main():
     
 
     model = BigramLanguageModel()
+    # always do this before parallel
     model = model.to(device)
-    # model = DistributedDataParallel(model)
     # model = nn.DataParallel(model)
+    # model = DistributedDataParallel(model)
     
-    m = model.to(device)
     # print the number of parameters in the model
-    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+    print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
 
     # create a PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)

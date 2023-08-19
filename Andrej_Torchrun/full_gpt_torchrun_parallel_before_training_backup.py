@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.nn.parallel import DistributedDataParallel
 
 import sys
 
@@ -19,8 +18,6 @@ import fire
 
 import os
 
-import tqdm
-
 def setup_model_parallel():
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))
@@ -29,7 +26,7 @@ def setup_model_parallel():
     initialize_model_parallel(world_size)
     torch.cuda.set_device(local_rank)
 
-    torch.manual_seed(1)
+    torch.manual_seed(1337)
 
     return local_rank, world_size
 
@@ -43,9 +40,9 @@ eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 512
-n_head = 16
-n_layer = 16
+n_embd = 256
+n_head = 4
+n_layer = 4
 dropout = 0.1
 # ------------
 
@@ -81,7 +78,7 @@ def get_batch(split):
     return x, y
 
 @torch.no_grad()
-def estimate_loss(model):
+def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
@@ -126,7 +123,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = RowParallelLinear(n_embd, n_embd)
+        self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -176,7 +173,7 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = ParallelEmbedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = RowParallelLinear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -227,10 +224,6 @@ def main():
     
 
     model = BigramLanguageModel()
-    model = model.to(device)
-    # model = DistributedDataParallel(model)
-    # model = nn.DataParallel(model)
-    
     m = model.to(device)
     # print the number of parameters in the model
     print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
@@ -238,28 +231,9 @@ def main():
     # create a PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-    max_iters = 1000
-    for iter in tqdm.trange(max_iters):
+    logits, _ = model(torch.tensor(encode("CLARK:"), device=device).view(1, -1))
 
-        # # every once in a while evaluate the loss on train and val sets
-        # if iter % eval_interval == 0 or iter == max_iters - 1:
-        #     losses = estimate_loss(model)
-        #     print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-
-        xb, yb = get_batch('train')
-
-        logits, loss = model(xb, yb)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-
-    losses = estimate_loss(model)
-    print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-    # logits, _ = model(torch.tensor(encode("CLARK:"), device=device).view(1, -1))
-
-    # generate from the model
-    context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    print(decode(model.generate(context, max_new_tokens=100)[0].tolist()))
+    print(logits)
 
 if __name__ == "__main__":
     fire.Fire(main)

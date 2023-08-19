@@ -29,7 +29,7 @@ def setup_model_parallel():
     initialize_model_parallel(world_size)
     torch.cuda.set_device(local_rank)
 
-    torch.manual_seed(1)
+    torch.manual_seed(1337)
 
     return local_rank, world_size
 
@@ -43,7 +43,7 @@ eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 512
+n_embd = 1152
 n_head = 16
 n_layer = 16
 dropout = 0.1
@@ -126,7 +126,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = RowParallelLinear(n_embd, n_embd)
+        self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -176,7 +176,7 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = ParallelEmbedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = RowParallelLinear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
