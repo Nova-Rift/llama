@@ -1,5 +1,6 @@
 # For this directory
 my_large_model/
+data
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
