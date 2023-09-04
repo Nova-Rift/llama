@@ -5,6 +5,7 @@ import torch.distributed as dist
 from torch.nn import Linear, MSELoss
 from torch.optim import SGD
 import torch.optim as optim
+from torch.utils.data.distributed import DistributedSampler
 
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
 from fairscale.optim.oss import OSS
@@ -54,7 +55,7 @@ local_rank, world_size = setup_model_parallel()
 
 # hyperparameters
 batch_size = 16  # how many independent sequences will we process in parallel?
-block_size = 1000  # what is the maximum context length for predictions?
+block_size = 1024  # what is the maximum context length for predictions?
 max_iters = 100
 eval_interval = 100
 learning_rate = 1e-3
@@ -347,6 +348,7 @@ args
 model = Transformer(args)
 model = model.to(device)
 model = FSDP(model)
+
 if local_rank == 0:
     print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
 
@@ -355,62 +357,53 @@ beta1 = 0.9
 beta2 = 0.95
 
 # Set up the optimizer
-# optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, betas=(beta1, beta2))
-optimizer = OSS(params=model.parameters(), optim=optim.AdamW, lr=0.005)
-
+optimizer = OSS(params=model.parameters(), optim=optim.AdamW, lr=0.001, betas=(beta1, beta2))
 
 loss_list = []
-eval_num = 10
-epochs = 200
-patience = 200
+eval_num = 5
+epochs = 100
+patience = 100
 best_loss = float('inf')
 best_model_wts = copy.deepcopy(model.state_dict())
 no_improve = 0
+
+# Prepare the data
+train_dataset = ...  # Your dataset
+train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=local_rank)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
 
 #------------------------------------------------------------
 # TRAIN -----------------------------------------------------
 start_time = time()
 
-for iter in range(epochs):
-    
-    print('wow')
+for epoch in range(epochs):
 
-    # sample a batch of data
-    xb, yb = get_batch('train')
+    for xb, yb in train_loader:
 
-    # evaluate the loss
-    logits, loss = model(xb, 0, yb)
-    loss_list.append(loss.item())
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward(retain_graph=True)
-    optimizer.step()
-    
-    print('wow2')
-    
-    if loss.item() < best_loss:
-        print('improve')
-        best_loss = loss.item()
-        print('improve2')
-        best_model_wts = copy.deepcopy(model.state_dict())
-        print('improve3')
-        no_improve = 0
-        print('improve4')
-    else:
-        no_improve += 1
-        print('no improve')
-        if no_improve >= patience:
-            print("Early Stoppage")
-            break
-    
-    print('here also')
-    
-    if iter % eval_num == 0 and local_rank == 0:
-        print(loss.item())
-        
-    print('not here')
+        # evaluate the loss
+        logits, loss = model(xb, 0, yb)
+        loss_list.append(loss.item())
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            best_model_wts = copy.deepcopy(model.state_dict())
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                break
+
+        if iter % eval_num == 0 and local_rank == 0:
+            print(loss.item())
+
+    if no_improve >= patience:
+        break
 
 model.load_state_dict(best_model_wts)
-        
+
 end_time = time()
 # END TRAIN -------------------------------------------------
 #------------------------------------------------------------
@@ -432,7 +425,7 @@ accuracy_list = []
 lists1 = []
 lists2 = []
 
-EPOCHS = 100
+EPOCHS = 20
 
 for set_type in ['train', 'test']:
     for epoch in range(EPOCHS):
