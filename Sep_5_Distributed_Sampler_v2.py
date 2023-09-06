@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from time import time
+
+start_time = time()
+
 from torch.utils.data import TensorDataset, DataLoader
 
 torch.manual_seed(1)
@@ -52,3 +56,9 @@ for epoch in range(epochs):
 
     if epoch % (epochs / 10) == 0:
         print(loss.item())
+        
+end_time = time()
+
+full_time = end_time - start_time
+
+print(f'time = {full_time}')
