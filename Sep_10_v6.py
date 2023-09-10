@@ -66,6 +66,7 @@ model = FSDP(model)
 params = sum(p.numel() for p in model.parameters())/1e6
 if local_rank == 0:
     print(f'model parameters = {params} million')
+# optimizer = optim.AdamW(model.parameters(), lr=0.001)
 optimizer = OSS(params=model.parameters(), optim=optim.AdamW, lr=0.001)
 loss_fn = nn.MSELoss()
 
@@ -114,4 +115,5 @@ end_time = time()
 
 total_time = end_time - start_time
 
-print(total_time)
+if local_rank == 0:
+    print(total_time)
