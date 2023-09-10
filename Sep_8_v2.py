@@ -64,6 +64,7 @@ loss_fn = nn.MSELoss()
 epochs = 100
 
 for epoch in range(epochs):
+    sampler.set_epoch(epoch)
     
     for X_batch, y_batch in dataloader:
         
