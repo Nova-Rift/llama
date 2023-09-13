@@ -22,7 +22,7 @@ from fairscale.optim.oss import OSS
 plt.style.use('ggplot')
 
 import warnings
-warnings.filterwarnings('ignore')
+warning.filterwarnings('ignore')
 
 
 # setup model and data parallel
