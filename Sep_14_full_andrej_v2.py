@@ -8,15 +8,17 @@ from accelerate import Accelerator
 accelerator = Accelerator()
 local_rank = accelerator.local_process_index
 
+import copy
+
 # hyperparameters
 batch_size = 16 # how many independent sequences will we process in parallel?
 block_size = 32 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 100
-learning_rate = 1e-3
+learning_rate = 0.001
 device = accelerator.device
 eval_iters = 200
-n_embd = 64
+n_embd = 256
 n_head = 4
 n_layer = 4
 dropout = 0.0
@@ -216,9 +218,10 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 model = BigramLanguageModel()
-m = model.to(device)
+m = copy.deepcopy(model).to(device)
 # print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+if local_rank == 0:
+    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -233,7 +236,7 @@ model, optimizer, dataloader = accelerator.prepare(
 
 # max_iters = 1000
 count = 0
-break_count = 1000
+break_count = 500
 for X_batch, y_batch in dataloader:
 
     # every once in a while evaluate the loss on train and val sets

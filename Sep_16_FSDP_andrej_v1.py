@@ -32,7 +32,7 @@ local_rank, world_size = setup_parallel()
 batch_size = 16 # how many independent sequences will we process in parallel?
 block_size = 32 # what is the maximum context length for predictions?
 max_iters = 5000
-eval_interval = 10
+eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
@@ -42,7 +42,7 @@ n_layer = 4
 dropout = 0.0
 # ------------
 
-torch.manual_seed(1337)
+torch.manual_seed(1)
 
 with open('../data/shakespeare.txt', 'r', encoding='utf-8') as f:
     text = f.read()
@@ -63,7 +63,7 @@ train_data = data[:n]
 val_data = data[n:]
 
 # data loading
-def get_all_data(split):
+def get_all_data_small(split):
     data = train_data if split == 'train' else val_data
     num_blocks = len(data) // block_size # number of total non-overlapping blocks
 
@@ -91,8 +91,8 @@ def get_batch(split):
     x, y = x.to(device), y.to(device)
     return x, y
 
-X_train, y_train = get_all_data('train')
-X_val, y_val = get_all_data('val')
+X_train, y_train = get_all_data_small('train')
+X_val, y_val = get_all_data_small('val')
 
 dataset = TensorDataset(X_train, y_train)
 sampler = DistributedSampler(dataset, num_replicas=world_size, rank=local_rank, shuffle=True)
@@ -235,47 +235,45 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 model = BigramLanguageModel()
+m = copy.deepcopy(model).to(device)
 model = FSDP(model.to(device))
+
 # print the number of parameters in the model
-if local_rank == 0:
-    print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 # optimizer = OSS(params=model.parameters(), optim=optimizer)
 # optimizer = OSS(params=model.parameters(), optim=torch.optim.AdamW, lr=0.001)
 
-max_iters = 2
-eval_interval = 2
-for iter in range(max_iters):
-    sampler.set_epoch(iter)
+# max_iters = 1000
+count = 0
+break_count = 500
+epochs = 1
 
-    # every once in a while evaluate the loss on train and val sets
-    if (iter % eval_interval == 0 or iter == max_iters - 1) and local_rank == 0:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+for epoch in range(epochs):
+    
+    sampler.set_epoch(epoch)
 
-#     count = 0
-    # sample a batch of data
-    for xb, yb in dataloader:
-#         count += 1
-#         if count == 10:
-#             break
+    for X_batch, y_batch in dataloader:
+
+
         # evaluate the loss
-        logits, loss = model(xb, yb)
+        logits, loss = model(X_batch, y_batch)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-        
-#     if iter % (max_iters / 10) == 0 and local_rank == 0:
-#         print(loss.item())
 
-    if local_rank == 0:
-        print(loss.item())
+        if count % (break_count / 10) == 0 and local_rank == 0:
+
+            print(loss.item())
+
+        count += 1
+        if count == break_count:
+            break
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-end_time = time()
+m.load_state_dict(model.state_dict())
 if local_rank == 0:
-#     print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
-    print(f'time = {end_time - start_time}')
+    print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
