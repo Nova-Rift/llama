@@ -1,12 +1,14 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
 from torch.utils.data import TensorDataset, DataLoader
 
 from accelerate import Accelerator
 accelerator = Accelerator()
 local_rank = accelerator.local_process_index
+
+from time import time
+
 
 # hyperparameters
 batch_size = 16 # how many independent sequences will we process in parallel?
@@ -218,7 +220,8 @@ class BigramLanguageModel(nn.Module):
 model = BigramLanguageModel()
 m = model.to(device)
 # print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+if local_rank == 0:
+    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -231,35 +234,42 @@ model, optimizer, dataloader = accelerator.prepare(
     model, optimizer, dataloader
 )
 
+
+
 # max_iters = 1000
 count = 0
 break_count = 500
-for X_batch, y_batch in dataloader:
+epochs = 1
 
-    # every once in a while evaluate the loss on train and val sets
-#     if iter % eval_interval == 0 or iter == max_iters - 1:
-#         losses = estimate_loss()
-#         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+start_time = time()
+for epoch in range(epochs):
 
-    # sample a batch of data
-#     xb, yb = get_batch('train')
+    for X_batch, y_batch in dataloader:
 
-    # evaluate the loss
-    logits, loss = model(X_batch, y_batch)
-    optimizer.zero_grad(set_to_none=True)
-#     loss.backward()
-    accelerator.backward(loss)
-    optimizer.step()
-    
-    if count % (break_count / 10) == 0 and local_rank == 0:
 
-        print(loss.item())
-    
-    count += 1
-    if count == break_count:
-        break
+        # evaluate the loss
+        logits, loss = model(X_batch, y_batch)
+        optimizer.zero_grad(set_to_none=True)
+        accelerator.backward(loss)
+        optimizer.step()
+
+        if count % (break_count / 10) == 0 and local_rank == 0:
+
+            print(loss.item())
+
+        count += 1
+        if count == break_count:
+            break
+end_time = time()
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 if local_rank == 0:
     print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+    
+print()
+    
+
+total_time = end_time - start_time
+if local_rank == 0:
+    print(f'Time = {total_time}')

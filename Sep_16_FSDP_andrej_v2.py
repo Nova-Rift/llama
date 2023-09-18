@@ -9,7 +9,7 @@ from fairscale.optim.oss import OSS
 import copy, os
 
 from time import time
-start_time = time()
+
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -36,7 +36,7 @@ eval_interval = 100
 learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 64
+n_embd = 3072
 n_head = 4
 n_layer = 4
 dropout = 0.0
@@ -249,9 +249,10 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 # max_iters = 1000
 count = 0
-break_count = 500
+break_count = 10
 epochs = 1
 
+start_time = time()
 for epoch in range(epochs):
     
     sampler.set_epoch(epoch)
@@ -272,6 +273,7 @@ for epoch in range(epochs):
         count += 1
         if count == break_count:
             break
+end_time = time()            
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
@@ -279,7 +281,7 @@ m.load_state_dict(model.state_dict())
 if local_rank == 0:
     print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
     
-end_time = time()
+
 total_time = end_time - start_time
 
 print()
