@@ -24,116 +24,75 @@ accelerator = Accelerator()
 local_rank = accelerator.local_process_index
 
 # hyperparameters
-batch_size = 16  # how many independent sequences will we process in parallel?
-block_size = 1024  # what is the maximum context length for predictions?
-max_iters = 100
+batch_size = 16 # how many independent sequences will we process in parallel?
+block_size = 32 # what is the maximum context length for predictions?
+max_iters = 5000
 eval_interval = 100
 learning_rate = 1e-3
-# device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = accelerator.device
 eval_iters = 200
-n_embd = 128
+n_embd = 64
 n_head = 4
 n_layer = 4
-dropout = 0.01
+dropout = 0.0
 # ------------
 
 
-torch.manual_seed(1337)
+torch.manual_seed(1)
 
-df = pd.read_csv('./opt_intelligence_test_data.csv')
+with open('../data/shakespeare.txt', 'r', encoding='utf-8') as f:
+    text = f.read()
 
-# remove NaN
-df = df.dropna(subset=['PL_DATE_OF_BIRTH'])
+# here are all the unique characters that occur in this text
+chars = sorted(list(set(text)))
+vocab_size = len(chars)
+# create a mapping from characters to integers
+stoi = { ch:i for i,ch in enumerate(chars) }
+itos = { i:ch for i,ch in enumerate(chars) }
+encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
+decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
 
-# remove HTML characters
-df['O_BODY1'] = df['O_BODY1'].apply(html.unescape)
-df['O_NAME'] = df['O_NAME'].apply(html.unescape)
-df['O_HEADLINE1'] = df['O_HEADLINE1'].apply(html.unescape)
-df['O_DISPLAY_NAME'] = df['O_DISPLAY_NAME'].apply(html.unescape)
+# Train and test splits
+data = torch.tensor(encode(text), dtype=torch.long)
+n = int(0.9*len(data)) # first 90% will be train, rest val
+train_data = data[:n]
+val_data = data[n:]
 
-# shuffle dem bitches
-df = df.sample(frac=1).reset_index(drop=True)
+def get_all_data_large(split):
+    
+    data = train_data if split == 'train' else val_data
+    x = torch.stack([data[i:i+block_size] for i in (len(data) - block_size)])
+    y = torch.stack([data[i+1:i+block_size+1] for i in (len(data) - block_size)])
+    x, y = x.to(device), y.to(device)
+    return x, y    
 
-n = math.floor(df.shape[0]*.9)
-train_data = df.iloc[:n, :]
-val_data = df.iloc[n:, :]
+# data loading
+def get_all_data_small(split):
+    data = train_data if split == 'train' else val_data
+    num_blocks = len(data) // block_size # number of total non-overlapping blocks
 
-tokenizer = Tokenizer(model_path='tokenizer.model')
+    # Pre-allocate tensors for X and y
+    X = torch.zeros((num_blocks, block_size), dtype=torch.long, device=device)
+    y = torch.zeros((num_blocks, block_size), dtype=torch.long, device=device)
+    
+    for i in range(num_blocks):
+        start_ix = i * block_size
+        end_ix = start_ix + block_size
+        
+        # Fill in the X and y tensors
+        X[i] = data[start_ix:end_ix]
+        y[i] = data[start_ix+1:end_ix+1]
+    
+    return X, y
 
+# data loading
 def get_batch(split):
-    strings = []
-    optins = []
+    # generate a small batch of data of inputs x and targets y
     data = train_data if split == 'train' else val_data
-    
-    # Separate positive and negative classes
-    df_positive = data[data.OPTED_IN == 1]
-    df_negative = data[data.OPTED_IN == 0]
-    
-    # Select half the batch size from each class
-    half_batch = batch_size // 2
-    idx_positive = torch.randperm(len(df_positive))[:half_batch]
-    idx_negative = torch.randperm(len(df_negative))[:half_batch] + len(df_positive)
-    
-    # Combine indices and shuffle
-    indices = torch.cat([idx_positive, idx_negative])
-    indices = indices[torch.randperm(len(indices))]
-
-    # Join positive and negative classes
-    df_combined = pd.concat([df_positive, df_negative])
-
-    for i in indices:
-        row = df_combined.iloc[i.item()]
-        string_dict = row[:-1].to_dict()  # turns row into dictionary cols=keys
-        string = ', '.join(f'{k}: {v}' for k, v in string_dict.items())  # creates string from row dict
-        encoded_string = torch.tensor(tokenizer.encode(string, bos=True, eos=False))  # encode string to tensor
-        full_tensor = torch.full((block_size,), 0)  # create tensor as long as longest and fill with new token
-        # using same token as <unk> 0
-        full_tensor[:len(encoded_string)] = encoded_string  # replace beginning of full tensor with original string tensor
-        encoded_string = full_tensor  # encoded string with padding
-        strings.append(encoded_string)  # add tensor to list of tensors
-        optin_dict = row[-1:].to_dict()  # convert optin column to dict
-        optins.append(optin_dict['opted_in'.upper()])  # add optin value to list
-        
-    optins = torch.tensor(optins)  # turn optins list to tensor
-    
-    x, y = torch.stack(strings), optins
+    ix = torch.randint(len(data) - block_size, (batch_size,))
+    x = torch.stack([data[i:i+block_size] for i in ix])
+    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     x, y = x.to(device), y.to(device)
-
-    return x, y
-
-
-def get_all_data(split):
-    strings = []
-    optins = []
-    data = train_data if split == 'train' else val_data
-    
-    # Separate positive and negative classes
-    df_positive = data[data.OPTED_IN == 1]
-    df_negative = data[data.OPTED_IN == 0]
-    df_negative = df_negative.iloc[:df_positive.shape[0]]  
-    
-    # Join positive and negative classes
-    df_combined = pd.concat([df_positive, df_negative])
-
-    for i in range(len(df_combined)):
-        row = df_combined.iloc[i]
-        string_dict = row[:-1].to_dict()  # turns row into dictionary cols=keys
-        string = ', '.join(f'{k}: {v}' for k, v in string_dict.items())  # creates string from row dict
-        encoded_string = torch.tensor(tokenizer.encode(string, bos=True, eos=False))  # encode string to tensor
-        full_tensor = torch.full((block_size,), 0)  # create tensor as long as longest and fill with new token
-        # using same token as <unk> 0
-        full_tensor[:len(encoded_string)] = encoded_string  # replace beginning of full tensor with original string tensor
-        encoded_string = full_tensor  # encoded string with padding
-        strings.append(encoded_string)  # add tensor to list of tensors
-        optin_dict = row[-1:].to_dict()  # convert optin column to dict
-        optins.append(optin_dict['opted_in'.upper()])  # add optin value to list
-        
-    optins = torch.tensor(optins)  # turn optins list to tensor
-    
-    x, y = torch.stack(strings), optins
-    x, y = x.to(device), y.to(device)
-
     return x, y
 
 
@@ -167,14 +126,14 @@ def estimate_loss():
 
 @dataclass
 class ModelArgs:
-    dim: int = 256
+    dim: int = 64
     n_layers: int = 4
     n_heads: int = 4
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     norm_eps: float = 1e-06
     max_batch_size: int = 16
-    max_seq_len: int = 1024
+    max_seq_len: int = 32
 
 
 class RMSNorm(torch.nn.Module):
@@ -344,108 +303,55 @@ class Transformer(nn.Module):
 
         return preds, loss
 
-    
-    
-    
-    
-    
-X, y = get_all_data('train')
-dataset = TensorDataset(X, y)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-
-
 
 args = ModelArgs(vocab_size=tokenizer.n_words)
-args
 
 model = Transformer(args)
-model = model.to(device)
-print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
 
-# Hyperparameters
-beta1 = 0.9
-beta2 = 0.95
+m = model.to(device)
+# print the number of parameters in the model
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
-# Set up the optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, betas=(beta1, beta2))
+# create a PyTorch optimizer
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+X, y = get_all_data_small('train')
+dataset = TensorDataset(X, y)
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 model, optimizer, dataloader = accelerator.prepare(
     model, optimizer, dataloader
 )
 
-loss_list = []
-epochs = 1
-
+# max_iters = 1000
 count = 0
-break_count = 500
+break_count = 1000
+for X_batch, y_batch in dataloader:
 
-for epoch in range(epochs):
+    # every once in a while evaluate the loss on train and val sets
+#     if iter % eval_interval == 0 or iter == max_iters - 1:
+#         losses = estimate_loss()
+#         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    for X_batch, y_batch in dataloader:
+    # sample a batch of data
+#     xb, yb = get_batch('train')
 
-        # evaluate the loss
-        logits, loss = model(X_batch, 0, y_batch)
-        loss_list.append(loss.item())
-    #     optimizer.zero_grad()
-        optimizer.zero_grad(set_to_none=True)
-        accelerator.backward(loss)        
-#         loss.backward()
-#         loss.backward(retain_graph=True)
-        optimizer.step()
-        
-        if count % (break_count / 10) == 0:
-            print(f'loss = {loss.item()}, count = {count}')
-        
-        if count == break_count:
-            break
-        else:
-            count += 1
-
-            
-            
-
-def accuracy(list1, list2):
-    correct = 0
-    for i in range(len(list1)):
-        if list1[i] == list2[i]:
-            correct += 1
-    return correct / len(list1)
-
-
-accuracy_list = []
-lists1 = []
-lists2 = []
-
-EPOCHS = 100
-
-for epoch in trange(EPOCHS):
-
-    X, y = get_batch('test')
-
-    output, _ = model(X, 0)
-
-
-#     mean = output.mean()
-
-    outing = []
-
-    for outs in output:
-        if outs.item() >= 0.5:
-            outing.append(1)
-        else:
-            outing.append(0)
-
-    list1 = outing
-    lists1.append(list1)
-
-    list2 = y.tolist()
-    lists2.append(list2)
+    # evaluate the loss
+    logits, loss = model(X_batch, y_batch)
+    optimizer.zero_grad(set_to_none=True)
+#     loss.backward()
+    accelerator.backward(loss)
+    optimizer.step()
     
-    accuracy_list.append(accuracy(list1, list2))
-        
-print(f'Accuracy = {sum(accuracy_list) / len(accuracy_list)}')
+    if count % (break_count / 10) == 0 and local_rank == 0:
 
-print('{:6s} {:6s} {:6s}'.format('perc', 'pred', 'true'))
-for l1, l2, l3 in zip([round(num, 2) for num in output.view(-1).tolist()], list1, list2):
-    print(f'{l1:6.2f} {l2:6} {l3:6}')
+        print(loss.item())
+    
+    count += 1
+    if count == break_count:
+        break
+
+# generate from the model
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+if local_rank == 0:
+    print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
